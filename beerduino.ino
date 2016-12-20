@@ -10,12 +10,14 @@
 #define TEMP_DELAY_IN_mS 60000
 #define BUBBLE_DELAY_IN_mS 1000
 
-#define TEMPERATURE_SETPOINT 21.1
+#define TEMPERATURE_DEFAULT_SETPOINT 20.0
 
 #define ANALOG_INPUT_TEMPERATURE A0
 #define ANALOG_INPUT_BUBBLE A1
-#define DIGITAL_OUTPUT_RELAY 0
-#define DIGITAL_OUTPUT_BUBBLE 1
+#define DIGITAL_OUTPUT_RELAY 2
+#define DIGITAL_OUTPUT_BUBBLE 3
+
+#define HEATER_POWER 20
 
 //////////////////////////////////
 // MicroOLED Object Declaration //
@@ -24,11 +26,46 @@
 // used, which will work for the Photon Micro OLED Shield (RST=D7, DC=D6, CS=A2)
 MicroOLED oled;
 
-static float average_reading = 0;
+// Bubble counter variables
+float average_photodiode_reading = 0;
+float bubble_depth = 0;
 bool is_bubble = false;
-int n_bubbles = 0;
-int heater = LOW;
+int number_bubbles = 0;
 
+// Temperature variables
+float temperature_setpoint = TEMPERATURE_DEFAULT_SETPOINT;
+int heater = LOW;
+float heater_power = 0;
+float average_heater_power = 0;
+
+// API key for channel in ThingSpeak
+const String key = "WWKPLDK8B1197QID";
+//
+// JSON for particle API webhook
+// {
+//     "event": "thingSpeakWrite_",
+//     "url": "https://api.thingspeak.com/update",
+//     "requestType": "POST",
+//     "form": {
+//         "api_key": "{{k}}",
+//         "field1": "{{1}}",
+//         "field2": "{{2}}",
+//         "field3": "{{3}}",
+//         "field4": "{{4}}",
+//         "field5": "{{5}}",
+//         "field6": "{{6}}",
+//         "field7": "{{7}}",
+//         "field8": "{{8}}",
+//         "lat": "{{a}}",
+//         "long": "{{o}}",
+//         "elevation": "{{e}}",
+//         "status": "{{s}}"
+//     },
+//     "mydevices": true,
+//     "noDefaults": true
+// }
+
+// Time
 NtpTime* ntpTime;
 
 void setup() {
@@ -45,8 +82,10 @@ void setup() {
   // Hello world
   oled.clear(PAGE);
   oled.setCursor(0, 0);
-  oled.println("BeerDuino!");
-  oled.println(Time.format(Time.now(),"%I:%M%p"));
+  oled.println("BeerDuino");
+  oled.println(" v2.0");
+  oled.println(" ");
+  oled.println(Time.format(Time.now(),"%I:%M %p"));
   oled.display();
 
   // Pin to LED
@@ -55,12 +94,20 @@ void setup() {
   pinMode(DIGITAL_OUTPUT_RELAY,OUTPUT);
 
   // Setup the average of the bubble signal (assuming no bubble)
-  average_reading = analogRead(ANALOG_INPUT_BUBBLE);
+  average_photodiode_reading = analogRead(ANALOG_INPUT_BUBBLE);
+  
+  // Register setpoint function
+  Particle.function("setpoint", setTemperatureSetpoint);
   
   // Wait a bit
   delay(1000);
 }
 
+float setTemperatureSetpoint(String command)
+{
+  temperature_setpoint = command.toFloat();
+  return temperature_setpoint;
+}
 
 void loop() {
   
@@ -71,47 +118,55 @@ void loop() {
   oled.setFontType(0);
   // Time
   oled.setCursor(0, 8*line++);
-  oled.println(Time.format(Time.now(),"%I:%M%p"));
+  oled.println(Time.format(Time.now(),(Time.now()%2)?"[%I:%M %p]":"[%I %M %p]"));
   // Print ADC read
   oled.setCursor(0, 8*line++);
   oled.print("A0=");
   oled.print(analogRead(ANALOG_INPUT_TEMPERATURE));
+  // Print ADC read
+  oled.setCursor(0, 8*line++);
+  oled.print("A1=");
+  oled.print(analogRead(ANALOG_INPUT_BUBBLE));
   // Print temperature
   oled.setCursor(0, 8*line++);
   oled.print("T[C]=");
   oled.print(temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE)));
   // Print heater status
   oled.setCursor(0, 8*line++);
-  oled.print("heat=");
-  oled.print(heater? "HI": "LO");
+  oled.print("heater=");
+  oled.print((heater>0)? "HI": "LO");
+  // Print number of bubbles
+  oled.setCursor(0, 8*line++);
+  oled.print("#blub=");
+  oled.print(number_bubbles);
   // Display
   oled.display();
   delay(100);
 
   // Check for bubble
-  if (false || timeForBubble()) {
+  if (timeForBubble()) {
     static const int delta = 5;
 
     // Take a reading from the photogate
-    int current_reading = analogRead(ANALOG_INPUT_BUBBLE);
-    if (current_reading < average_reading - delta) {
+    int current_photodiode_reading = analogRead(ANALOG_INPUT_BUBBLE);
+    if (current_photodiode_reading > average_photodiode_reading + delta) {
 
       // we have a bubble!
       digitalWrite(DIGITAL_OUTPUT_BUBBLE,HIGH);
       is_bubble = true;
-      n_bubbles++;
+      number_bubbles++;
 
       // Figure out how big the bubble is by measuring the next samples
-      int minimum_in_bubble = 1023; // largest possible reading      
+      int maximum_in_bubble = 0; // smallest possible reading      
       for (int i = 0; i < 10; i++) {
         int reading_while_in_bubble = analogRead(ANALOG_INPUT_BUBBLE);
-        if (reading_while_in_bubble < minimum_in_bubble) {
-          minimum_in_bubble = reading_while_in_bubble;
+        if (reading_while_in_bubble > maximum_in_bubble) {
+          maximum_in_bubble = reading_while_in_bubble;
         }
         // wait a bit
         delay(10);
       }
-      float depth = average_reading - minimum_in_bubble;
+      bubble_depth = maximum_in_bubble - average_photodiode_reading;
 
     } else {
       // no bubble
@@ -120,33 +175,46 @@ void loop() {
     }
 
     // Update moving average (outside the loop so it doesn't get stuck in bubble-land)
-    average_reading = 0.95 * average_reading + 0.05 * current_reading;
+    average_photodiode_reading = 0.95 * average_photodiode_reading + 0.05 * current_photodiode_reading;
   }
 
   // Check temperature
   if (timeForTemp()) {
 
-    // Read temperature
-    int temp_reading = analogRead(ANALOG_INPUT_TEMPERATURE);  
-
     // Convert to deg C
-    float tempc = temp_cal(temp_reading); //read from A0 pin on board for temperature
+    // read from A0 pin on board for temperature
+    float temperature_celsius = temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE));
 
     // Turn heater ON or OFF depending on temperature
-    if (tempc < TEMPERATURE_SETPOINT) {
+    if (temperature_celsius < temperature_setpoint) {
       heater = HIGH;
+      heater_power = heater*HEATER_POWER;
       digitalWrite(DIGITAL_OUTPUT_RELAY,heater);
     } else {
       heater = LOW;
+      heater_power = heater*HEATER_POWER;
       digitalWrite(DIGITAL_OUTPUT_RELAY,heater);
     }
+    
+    // Update moving average
+    average_heater_power = 0.95 * average_heater_power + 0.05 * heater_power;
 
     // Publish values  
-    String temperature = String(tempc);
-    Particle.publish("temperature", temperature, PRIVATE);
+    String BeerDuino_data = String("{ ") +
+        "\"1\": \"" + String(analogRead(ANALOG_INPUT_TEMPERATURE)) + "\"," +
+        "\"2\": \"" + String(temperature_celsius) + "\"," +
+        "\"3\": \"" + String(temperature_setpoint) + "\"," +
+        "\"4\": \"" + String(heater_power) + "\"," +
+        "\"5\": \"" + String(average_photodiode_reading) + "\"," +
+        "\"6\": \"" + String(bubble_depth) + "\"," +
+        "\"7\": \"" + String(number_bubbles) + "\"," +
+        "\"8\": \"" + String(average_heater_power) + "\"," +
+        "\"k\": \"" + key + "\" }";
+    Particle.publish("BeerDuino_data",BeerDuino_data,PRIVATE);
 
     // Reset number of bubbles
-    n_bubbles = 0;
+    number_bubbles = 0;
+    bubble_depth = 0;
   }
 }
 
@@ -192,25 +260,5 @@ bool timeForBubble() {
     return true;
   }
   return false;
-}
-
-// Center and print a small title
-// This function is quick and dirty. Only works for titles one
-// line long.
-void printTitle(String title, int font)
-{
-  int middleX = oled.getLCDWidth() / 2;
-  int middleY = oled.getLCDHeight() / 2;
-
-  oled.clear(PAGE);
-  oled.setFontType(font);
-  // Try to set the cursor in the middle of the screen
-  oled.setCursor(middleX - (oled.getFontWidth() * (title.length()/2)),
-                 middleY - (oled.getFontWidth() / 2));
-  // Print the title:
-  oled.print(title);
-  oled.display();
-  delay(1500);
-  oled.clear(PAGE);
 }
 
