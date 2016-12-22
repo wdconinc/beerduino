@@ -37,6 +37,9 @@ float temperature_setpoint = TEMPERATURE_DEFAULT_SETPOINT;
 int heater = LOW;
 float heater_power = 0;
 float average_heater_power = 0;
+unsigned int heater_history = 0;
+unsigned int heater_history_data = 0; // filled values
+unsigned int heater_history_mask = 0xffff; // number of minutes
 
 // API key for channel in ThingSpeak
 const String key = "WWKPLDK8B1197QID";
@@ -188,16 +191,21 @@ void loop() {
     // Turn heater ON or OFF depending on temperature
     if (temperature_celsius < temperature_setpoint) {
       heater = HIGH;
-      heater_power = heater*HEATER_POWER;
-      digitalWrite(DIGITAL_OUTPUT_RELAY,heater);
     } else {
       heater = LOW;
-      heater_power = heater*HEATER_POWER;
-      digitalWrite(DIGITAL_OUTPUT_RELAY,heater);
     }
+    heater_power = heater * HEATER_POWER;
+    heater_history = ((heater_history << 1) + heater);
+    heater_history &= heater_history_mask;
+    heater_history_data = (heater_history_data << 1) + 1;
+    heater_history_data &= heater_history_mask;
+    digitalWrite(DIGITAL_OUTPUT_RELAY,heater);
     
     // Update moving average
+    // exponential average
     average_heater_power = 0.95 * average_heater_power + 0.05 * heater_power;
+    // average of last bits
+    average_heater_power = float(bitCount(heater_history)) / float(bitCount(heater_history_data)) * HEATER_POWER;
 
     // Publish values  
     String BeerDuino_data = String("{ ") +
@@ -262,3 +270,9 @@ bool timeForBubble() {
   return false;
 }
 
+// Function to count bits in an unsigned int
+int bitCount(unsigned int u) {
+  // https://blogs.msdn.microsoft.com/jeuge/2005/06/08/bit-fiddling-3/
+  unsigned int count = u - ((u >> 1) & 033333333333) - ((u >> 2) & 011111111111);
+  return ((count + (count >> 3)) & 030707070707) % 63;
+}
