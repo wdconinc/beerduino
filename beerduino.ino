@@ -11,6 +11,7 @@
 #define BUBBLE_DELAY_IN_mS 1000
 
 #define TEMPERATURE_DEFAULT_SETPOINT 20.0
+#define TEMPERATURE_DEFAULT_RANGE 1.0
 
 #define ANALOG_INPUT_TEMPERATURE A0
 #define ANALOG_INPUT_BUBBLE A1
@@ -34,6 +35,7 @@ int number_bubbles = 0;
 
 // Temperature variables
 float temperature_setpoint = TEMPERATURE_DEFAULT_SETPOINT;
+float temperature_range = TEMPERATURE_DEFAULT_RANGE;
 int heater = LOW;
 float heater_power = 0;
 float average_heater_power = 0;
@@ -102,6 +104,9 @@ void setup() {
   // Register setpoint function
   Particle.function("setpoint", setTemperatureSetpoint);
   
+  // Register setrange function
+  Particle.function("range", setTemperatureRange);
+
   // Wait a bit
   delay(1000);
 }
@@ -110,6 +115,12 @@ float setTemperatureSetpoint(String command)
 {
   temperature_setpoint = command.toFloat();
   return temperature_setpoint;
+}
+
+float setTemperatureRange(String command)
+{
+  temperature_range = command.toFloat();
+  return temperature_range;
 }
 
 void loop() {
@@ -189,9 +200,10 @@ void loop() {
     float temperature_celsius = temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE));
 
     // Turn heater ON or OFF depending on temperature
-    if (temperature_celsius < temperature_setpoint) {
+    if (temperature_celsius < temperature_setpoint - temperature_range) {
       heater = HIGH;
-    } else {
+    }
+    if (temperature_celsius > temperature_setpoint + temperature_range) {
       heater = LOW;
     }
     heater_power = heater * HEATER_POWER;
