@@ -32,7 +32,7 @@ MicroOLED oled;
 
 // Bubble counter variables
 float average_photodiode_reading = 0;
-float bubble_depth = 0;
+float average_bubble_depth = 0;
 bool is_bubble = false;
 int number_bubbles = 0;
 int time_of_last_bubble = 0;
@@ -182,7 +182,7 @@ void loop() {
       // Figure out how big the bubble is by measuring the next samples
       int minimum_in_bubble = 4096; // largest possible reading
       int lowest_sample_index = 0;
-      for (int i = 0; i < 10; i++) {
+      for (int i = 0; i < 15; i++) {
         int reading_while_in_bubble = analogRead(ANALOG_INPUT_BUBBLE);
         if (reading_while_in_bubble < minimum_in_bubble) {
           minimum_in_bubble = reading_while_in_bubble;
@@ -191,7 +191,10 @@ void loop() {
         // wait a bit
         delay(10);
       }
-      bubble_depth = minimum_in_bubble - average_photodiode_reading;
+      float bubble_depth = minimum_in_bubble - average_photodiode_reading;
+
+      // Update average bubble depth
+      average_bubble_depth += (bubble_depth - average_bubble_depth) / number_bubbles;
 
       // Publish bubble data packet
       String BeerDuino_bubble = String("{ ") +
@@ -247,15 +250,15 @@ void loop() {
         "\"3\": \"" + String(temperature_setpoint) + "\"," +
         "\"4\": \"" + String(heater_power) + "\"," +
         "\"5\": \"" + String(average_photodiode_reading) + "\"," +
-        "\"6\": \"" + String(bubble_depth) + "\"," +
+        "\"6\": \"" + String(average_bubble_depth) + "\"," +
         "\"7\": \"" + String(number_bubbles) + "\"," +
         "\"8\": \"" + String(average_heater_power) + "\"," +
         "\"k\": \"" + BeerDuino_data_key + "\" }";
     Particle.publish("BeerDuino_data",BeerDuino_data,PRIVATE);
 
-    // Reset number of bubbles
+    // Reset number of bubbles and average bubble depth
     number_bubbles = 0;
-    bubble_depth = 0;
+    average_bubble_depth = 0;
   }
 }
 
