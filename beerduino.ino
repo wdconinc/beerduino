@@ -8,10 +8,13 @@
 #include <cmath>
 
 #define TEMP_DELAY_IN_mS 60000
-#define BUBBLE_DELAY_IN_mS 1000
+#define OLED_DELAY_IN_mS 100
+#define BUBBLE_DELAY_IN_mS 10
+
+#define MINIMUM_TIME_BETWEEN_BUBBLES_IN_mS 500
 
 #define TEMPERATURE_DEFAULT_SETPOINT 20.0
-#define TEMPERATURE_DEFAULT_RANGE 1.0
+#define TEMPERATURE_DEFAULT_RANGE 0.5
 
 #define ANALOG_INPUT_TEMPERATURE A0
 #define ANALOG_INPUT_BUBBLE A1
@@ -32,6 +35,7 @@ float average_photodiode_reading = 0;
 float bubble_depth = 0;
 bool is_bubble = false;
 int number_bubbles = 0;
+int time_of_last_bubble = 0;
 
 // Temperature variables
 float temperature_setpoint = TEMPERATURE_DEFAULT_SETPOINT;
@@ -44,31 +48,34 @@ unsigned int heater_history_data = 0; // filled values
 unsigned int heater_history_mask = 0xffff; // number of minutes
 
 // API key for channel in ThingSpeak
-const String key = "WWKPLDK8B1197QID";
+const String BeerDuino_data_key = "WWKPLDK8B1197QID";
+const String BeerDuino_bubble_key = "G8M1VPY46JXLW6EI";
 //
 // JSON for particle API webhook
-// {
-//     "event": "thingSpeakWrite_",
-//     "url": "https://api.thingspeak.com/update",
-//     "requestType": "POST",
-//     "form": {
-//         "api_key": "{{k}}",
-//         "field1": "{{1}}",
-//         "field2": "{{2}}",
-//         "field3": "{{3}}",
-//         "field4": "{{4}}",
-//         "field5": "{{5}}",
-//         "field6": "{{6}}",
-//         "field7": "{{7}}",
-//         "field8": "{{8}}",
-//         "lat": "{{a}}",
-//         "long": "{{o}}",
-//         "elevation": "{{e}}",
-//         "status": "{{s}}"
-//     },
-//     "mydevices": true,
-//     "noDefaults": true
-// }
+/*
+{
+    "event": "thingSpeakWrite_",
+    "url": "https://api.thingspeak.com/update",
+    "requestType": "POST",
+    "form": {
+        "api_key": "{{k}}",
+        "field1": "{{1}}",
+        "field2": "{{2}}",
+        "field3": "{{3}}",
+        "field4": "{{4}}",
+        "field5": "{{5}}",
+        "field6": "{{6}}",
+        "field7": "{{7}}",
+        "field8": "{{8}}",
+        "lat": "{{a}}",
+        "long": "{{o}}",
+        "elevation": "{{e}}",
+        "status": "{{s}}"
+    },
+    "mydevices": true,
+    "noDefaults": true
+}
+*/
 
 // Time
 NtpTime* ntpTime;
@@ -124,63 +131,77 @@ float setTemperatureRange(String command)
 }
 
 void loop() {
-  
-  // Clear the display
-  oled.clear(PAGE);
-  int line = 0;
-  // Smallest font
-  oled.setFontType(0);
-  // Time
-  oled.setCursor(0, 8*line++);
-  oled.println(Time.format(Time.now(),(Time.now()%2)?"[%I:%M %p]":"[%I %M %p]"));
-  // Print ADC read
-  oled.setCursor(0, 8*line++);
-  oled.print("A0=");
-  oled.print(analogRead(ANALOG_INPUT_TEMPERATURE));
-  // Print ADC read
-  oled.setCursor(0, 8*line++);
-  oled.print("A1=");
-  oled.print(analogRead(ANALOG_INPUT_BUBBLE));
-  // Print temperature
-  oled.setCursor(0, 8*line++);
-  oled.print("T[C]=");
-  oled.print(temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE)));
-  // Print heater status
-  oled.setCursor(0, 8*line++);
-  oled.print("heater=");
-  oled.print((heater>0)? "HI": "LO");
-  // Print number of bubbles
-  oled.setCursor(0, 8*line++);
-  oled.print("#blub=");
-  oled.print(number_bubbles);
-  // Display
-  oled.display();
-  delay(100);
+  // Check for OLED update
+  if (timeForOled()) {
+    // Clear the display
+    oled.clear(PAGE);
+    int line = 0;
+    // Smallest font
+    oled.setFontType(0);
+    // Time
+    oled.setCursor(0, 8*line++);
+    oled.println(Time.format(Time.now(),(Time.now()%2)?"[%I:%M %p]":"[%I %M %p]"));
+    // Print ADC read
+    oled.setCursor(0, 8*line++);
+    oled.print("A0=");
+    oled.print(analogRead(ANALOG_INPUT_TEMPERATURE));
+    // Print ADC read
+    oled.setCursor(0, 8*line++);
+    oled.print("A1=");
+    oled.print(analogRead(ANALOG_INPUT_BUBBLE));
+    // Print temperature
+    oled.setCursor(0, 8*line++);
+    oled.print("T[C]=");
+    oled.print(temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE)));
+    // Print heater status
+    oled.setCursor(0, 8*line++);
+    oled.print("heater=");
+    oled.print((heater>0)? "HI": "LO");
+    // Print number of bubbles
+    oled.setCursor(0, 8*line++);
+    oled.print("#blub=");
+    oled.print(number_bubbles);
+    // Display
+    oled.display();
+  }
 
   // Check for bubble
-  if (timeForBubble()) {
-    static const int delta = 5;
+  if (timeForBubble() && timeSinceLastBubble() > MINIMUM_TIME_BETWEEN_BUBBLES_IN_mS) {
+    static const int delta = 10;
 
     // Take a reading from the photogate
     int current_photodiode_reading = analogRead(ANALOG_INPUT_BUBBLE);
-    if (current_photodiode_reading > average_photodiode_reading + delta) {
+    if (current_photodiode_reading < average_photodiode_reading - delta) {
 
       // we have a bubble!
       digitalWrite(DIGITAL_OUTPUT_BUBBLE,HIGH);
+      time_of_last_bubble = millis();
       is_bubble = true;
       number_bubbles++;
 
       // Figure out how big the bubble is by measuring the next samples
-      int maximum_in_bubble = 0; // smallest possible reading      
+      int minimum_in_bubble = 4096; // largest possible reading
+      int lowest_sample_index = 0;
       for (int i = 0; i < 10; i++) {
         int reading_while_in_bubble = analogRead(ANALOG_INPUT_BUBBLE);
-        if (reading_while_in_bubble > maximum_in_bubble) {
-          maximum_in_bubble = reading_while_in_bubble;
+        if (reading_while_in_bubble < minimum_in_bubble) {
+          minimum_in_bubble = reading_while_in_bubble;
+          lowest_sample_index = i;
         }
         // wait a bit
         delay(10);
       }
-      bubble_depth = maximum_in_bubble - average_photodiode_reading;
+      bubble_depth = minimum_in_bubble - average_photodiode_reading;
+
+      // Publish bubble data packet
+      String BeerDuino_bubble = String("{ ") +
+        "\"1\": \"" + String(average_photodiode_reading) + "\"," +
+        "\"2\": \"" + String(current_photodiode_reading) + "\"," +
+        "\"3\": \"" + String(minimum_in_bubble) + "\","
+        "\"4\": \"" + String(bubble_depth) + "\","
+        "\"5\": \"" + String(lowest_sample_index) + "\","
+        "\"k\": \"" + BeerDuino_bubble_key + "\" }";
+      Particle.publish("BeerDuino_bubble",BeerDuino_bubble,PRIVATE);
 
     } else {
       // no bubble
@@ -229,7 +250,7 @@ void loop() {
         "\"6\": \"" + String(bubble_depth) + "\"," +
         "\"7\": \"" + String(number_bubbles) + "\"," +
         "\"8\": \"" + String(average_heater_power) + "\"," +
-        "\"k\": \"" + key + "\" }";
+        "\"k\": \"" + BeerDuino_data_key + "\" }";
     Particle.publish("BeerDuino_data",BeerDuino_data,PRIVATE);
 
     // Reset number of bubbles
@@ -271,9 +292,25 @@ bool timeForTemp() {
   return false;
 }
 
-// Function to indicate when a temp measurement is due
+// Function to indicate time since last bubble
+int timeSinceLastBubble() {
+  return (millis() - time_of_last_bubble);
+}
+
+// Function to indicate when a bubble measurement is due
 bool timeForBubble() {
   static long delta = BUBBLE_DELAY_IN_mS;
+  static long previous = -delta;
+  if (millis() > previous + delta) {
+    previous = millis();
+    return true;
+  }
+  return false;
+}
+
+// Function to indicate when a temp measurement is due
+bool timeForOled() {
+  static long delta = OLED_DELAY_IN_mS;
   static long previous = -delta;
   if (millis() > previous + delta) {
     previous = millis();
