@@ -1,10 +1,7 @@
-// This #include statement was automatically added by the Particle IDE.
 #include "ntp-time.h"
-
-// This #include statement was automatically added by the Particle IDE.
 #include "SparkFunMicroOLED.h"
+#include "Ubidots.h"
 
-// what's a log?
 #include <cmath>
 
 #define TEMP_DELAY_IN_mS 60000
@@ -77,6 +74,10 @@ const String BeerDuino_bubble_key = "G8M1VPY46JXLW6EI";
 }
 */
 
+// API info for Ubidots
+#define TOKEN "MBrbYGoQgvKOheBtyQYvfsyxKqyXCd"
+Ubidots ubidots(TOKEN);
+
 // Time
 NtpTime* ntpTime;
 
@@ -113,6 +114,9 @@ void setup() {
   
   // Register setrange function
   Particle.function("range", setTemperatureRange);
+
+  // Set data source name for Ubidots
+  ubidots.setDatasourceName("BeerDuino");
 
   // Wait a bit
   delay(1000);
@@ -196,7 +200,7 @@ void loop() {
       // Update average bubble depth
       average_bubble_depth += (bubble_depth - average_bubble_depth) / number_bubbles;
 
-      // Publish bubble data packet
+      // Publish bubble data packet to ThingSpeak
       String BeerDuino_bubble = String("{ ") +
         "\"1\": \"" + String(average_photodiode_reading) + "\"," +
         "\"2\": \"" + String(current_photodiode_reading) + "\"," +
@@ -205,6 +209,15 @@ void loop() {
         "\"5\": \"" + String(lowest_sample_index) + "\","
         "\"k\": \"" + BeerDuino_bubble_key + "\" }";
       Particle.publish("BeerDuino_bubble",BeerDuino_bubble,PRIVATE);
+
+      // Publish bubble data packet to Ubidots
+      ubidots.setDatasourceTag("Bubble");
+      ubidots.add("average_photodiode_reading",average_photodiode_reading);
+      ubidots.add("current_photodiode_reading",current_photodiode_reading);
+      ubidots.add("minimum_in_bubble",minimum_in_bubble);
+      ubidots.add("bubble_depth",bubble_depth);
+      ubidots.add("lowest_sample_index",lowest_sample_index);
+      ubidots.sendAll();
 
     } else {
       // no bubble
@@ -222,6 +235,15 @@ void loop() {
     // Convert to deg C
     // read from A0 pin on board for temperature
     float temperature_celsius = temp_cal(analogRead(ANALOG_INPUT_TEMPERATURE));
+
+    // Get updated temperature setpoint from Ubidots
+    float write_temperature_setpoint = ubidots.getValueWithDatasource("Control", "setpoint");
+    ubidots.setDatasourceTag("Control");
+    ubidots.add("read_temperature_setpoint",write_temperature_setpoint);
+    ubidots.sendAll();    
+    if (write_temperature_setpoint > 15 && write_temperature_setpoint < 25) {
+      temperature_setpoint = write_temperature_setpoint;
+    }
 
     // Turn heater ON or OFF depending on temperature
     if (temperature_celsius < temperature_setpoint - temperature_range) {
@@ -243,7 +265,7 @@ void loop() {
     // average of last bits
     average_heater_power = float(bitCount(heater_history)) / float(bitCount(heater_history_data)) * HEATER_POWER;
 
-    // Publish values  
+    // Publish temperature values to ThingSpeak
     String BeerDuino_data = String("{ ") +
         "\"1\": \"" + String(analogRead(ANALOG_INPUT_TEMPERATURE)) + "\"," +
         "\"2\": \"" + String(temperature_celsius) + "\"," +
@@ -255,6 +277,18 @@ void loop() {
         "\"8\": \"" + String(average_heater_power) + "\"," +
         "\"k\": \"" + BeerDuino_data_key + "\" }";
     Particle.publish("BeerDuino_data",BeerDuino_data,PRIVATE);
+
+    // Publish temperature values to Ubidots
+    ubidots.setDatasourceTag("Data");
+    ubidots.add("temperature_adc_value",analogRead(ANALOG_INPUT_TEMPERATURE));
+    ubidots.add("temperature_celsius",temperature_celsius);
+    ubidots.add("temperature_setpoint",temperature_setpoint);
+    ubidots.add("heater_power",heater_power);
+    ubidots.add("average_photodiode_reading",average_photodiode_reading);
+    ubidots.add("average_bubble_depth",average_bubble_depth);
+    ubidots.add("number_bubbles",number_bubbles);
+    ubidots.add("average_heater_power",average_heater_power);
+    ubidots.sendAll();
 
     // Reset number of bubbles and average bubble depth
     number_bubbles = 0;
